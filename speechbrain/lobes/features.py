@@ -13,6 +13,7 @@ from speechbrain.processing.features import (
     Deltas,
     ContextWindow,
 )
+import torchaudio.compliance.kaldi as Kaldi
 
 
 class Fbank(torch.nn.Module):
@@ -92,6 +93,7 @@ class Fbank(torch.nn.Module):
         right_frames=5,
         win_length=25,
         hop_length=10,
+        kaldi_fbank=True
     ):
         super().__init__()
         self.deltas = deltas
@@ -122,6 +124,8 @@ class Fbank(torch.nn.Module):
         self.context_window = ContextWindow(
             left_frames=left_frames, right_frames=right_frames,
         )
+        self.kaldi_fbank = kaldi_fbank
+        self.n_mels = n_mels
 
     def forward(self, wav):
         """Returns a set of features generated from the input waveforms.
@@ -132,19 +136,25 @@ class Fbank(torch.nn.Module):
             A batch of audio signals to transform to features.
         """
         with torch.no_grad():
+            if not self.kaldi_fbank:
+                STFT = self.compute_STFT(wav)
+                mag = spectral_magnitude(STFT)
+                fbanks = self.compute_fbanks(mag)
 
-            STFT = self.compute_STFT(wav)
-            mag = spectral_magnitude(STFT)
-            fbanks = self.compute_fbanks(mag)
+                if self.deltas:
+                    delta1 = self.compute_deltas(fbanks)
+                    delta2 = self.compute_deltas(delta1)
+                    fbanks = torch.cat([fbanks, delta1, delta2], dim=2)
 
-            if self.deltas:
-                delta1 = self.compute_deltas(fbanks)
-                delta2 = self.compute_deltas(delta1)
-                fbanks = torch.cat([fbanks, delta1, delta2], dim=2)
-
-            if self.context:
-                fbanks = self.context_window(fbanks)
-
+                if self.context:
+                    fbanks = self.context_window(fbanks)
+            else:
+                fbanks_list = []
+                for single_wav in wav:
+                    single_wav = single_wav.unsqueeze(0)
+                    fbanks_list.append(Kaldi.fbank(
+                        single_wav, num_mel_bins=self.n_mels))
+                fbanks = torch.stack(fbanks_list)
         return fbanks
 
 
